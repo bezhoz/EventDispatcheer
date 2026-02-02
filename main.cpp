@@ -1,102 +1,24 @@
+#include "CollectBaseHashes.h"
+
+
+#include "ArrayView.h"
+
+#include "EventDispatcher.h"
+#include "EventDispatcher2.h"
+#include "FunctionTraits.h"
+#include "HashBasedEventDispatcher.h"
+
 #include <iostream>
 #include <type_traits>
 #include <typeinfo>
 
-class IHandler;
-
-class IEvent
-{
-public:
-    virtual ~IEvent() = default;
-    virtual void sendTo(IHandler& i_handler) const = 0;
-};
-
-class IHandler
-{
-public:
-    virtual ~IHandler() = default;
-    virtual void handle(const IEvent& i_event) = 0;
-};
-
-template<typename T>
-struct ISingleEventHandler
-{
-    virtual void handle(const T& i_event) = 0;
-};
-
-template<typename T>
-class EventBase : public IEvent
-{
-public:
-    using ISEHandler = ISingleEventHandler<T>;
-    void sendTo(IHandler& i_handler) const override
-    {
-        if (auto* eventHandler = dynamic_cast<ISEHandler*>(&i_handler); eventHandler !=
-                                                                       nullptr)
-        {
-            eventHandler->handle(*static_cast<const T*>(this));
-        }
-    }
-};
-
-template<typename... E>
-class HandlerBase : public IHandler, public E::ISEHandler...
-{
-public:
-    void handle(const IEvent& i_event) override
-    {
-        i_event.sendTo(*this);
-    }
-};
-
-template<typename T>
-struct FunctionTraits;
-
-template <typename C, typename R, typename A>
-struct FunctionTraits<R(C::*)(A)>
-{
-    using Class = C;
-    using Argument = typename std::remove_cv_t<std::remove_reference_t<A>>;
-};
-
-template<auto Method>
-using Argument = typename FunctionTraits<decltype(Method)>::Argument;
-
-template<auto Method>
-using Class = typename FunctionTraits<decltype(Method)>::Class;
-
-template<auto...Method>
-class HandlerBase2;
-
-template<auto Method>
-class HandlerBase2<Method>: public Class<Method>,
-                            public ISingleEventHandler<Argument<Method>>,
-                            public HandlerBase<>
-{
-    void handle(const Argument<Method>& i_event) override
-    {
-        (static_cast<Class<Method>*>(this)->*Method)(i_event);
-    }
-};
-
-template<auto Method1, auto Method2, auto... Methods>
-class HandlerBase2<Method1, Method2, Methods...>:
-        public ISingleEventHandler<Argument<Method1>>,
-        public HandlerBase2<Method2, Methods...>
-{
-    void handle(const Argument<Method1>& i_event) override
-    {
-        (static_cast<Class<Method1>*>(this)->*Method1)(i_event);
-    }
-};
-
 class Event1 : public EventBase<Event1>{};
 class Event2 : public EventBase<Event2>{};
 class Event3 : public EventBase<Event3>{};
+class Event4 : public Event3{};
 
 class Handler : public HandlerBase<Event1, Event2>
 {
-public:
     void handle(const Event1& i_event) override
     {
         std::cout << "Handler::handle(Event1)" << std::endl;
@@ -107,51 +29,114 @@ public:
     }
 };
 
-class Handler2Impl
+struct Handler2Impl
 {
-public:
-    void call1(const Event1& i_event)
-    {
-        std::cout << "Handler2Impl::call1(Event1)" << std::endl;
-    }
+  void call1(const Event1& i_event)
+  {
+      std::cout << "Handler2Impl::call1(Event1)" << std::endl;
+  }
 
-    void call2(const Event2& i_event)
-    {
-        std::cout << "Handler2Impl::call2(Event2)" << std::endl;
-    }
-    void call3(const Event3& i_event)
-    {
-        std::cout << "Handler2Impl::call3(Event3)" << std::endl;
-    }
+  void call2(const Event2& i_event)
+  {
+      std::cout << "Handler2Impl::call2(Event2)" << std::endl;
+  }
+
+  void call3(const Event3& i_event)
+  {
+      std::cout << "Handler2Impl::call3(Event3)" << std::endl;
+  }
 };
 
 using Handler2 = HandlerBase2<&Handler2Impl::call1, &Handler2Impl::call2, &Handler2Impl::call3>;
+
+struct Handler3Impl
+{
+  void doSomething(const Event1& i_event)
+  {
+      std::cout << "Handler3Impl::doSomething(Event1)" << std::endl;
+  }
+
+  void handleEvent2(const Event2& i_event)
+  {
+      std::cout << "Handler3Impl::handleEvent2(Event2)" << std::endl;
+  }
+
+  void asdfrf(const Event3& i_event)
+  {
+      std::cout << "Handler3Impl::asdfrf(Event3)" << std::endl;
+  }
+};
+
+using Handler3 = HandlerBase2<&Handler3Impl::doSomething, &Handler3Impl::handleEvent2, &Handler3Impl::asdfrf>;
+
+void printHashes(const ArrayView2<uint64_t>& i_hashes)
+{
+  std::cout << "count = " << i_hashes.size() << std::endl;
+  for (int i = 0; i < i_hashes.size(); ++i)
+  {
+    std::cout << "hash[" << i << "]=" << i_hashes[i] << std::endl;
+  }
+}
+
+namespace H
+{
+  struct Event1 : public IEvent
+  {
+    using Base = IEvent;
+  };
+
+  struct Event2 : public IEvent
+  {
+    using Base = IEvent;
+  };
+
+  struct Event3 : public IEvent
+  {
+    using Base = IEvent;
+  };
+
+  struct Event4 : public Event3
+  {
+    using Base = Event3;
+  };
+
+  struct Event1_1 : Inherit<IEvent>{};
+  struct Event2_1 : Inherit<Event1_1>{};
+  struct Event3_1 : Inherit<Event2_1>{};
+  struct Event4_1 : Inherit<Event3_1>{};
+};
 
 int main()
 {
     Event1 e1;
     Event2 e2;
     Event3 e3;
+    Event4 e4;
 
     Handler i1;
     Handler2 i2;
+    Handler3 i3;
 
     IHandler* pi1 = &i1;
-    IHandler* pi3 = &i2;
+    IHandler* pi2 = &i2;
+    IHandler* pi3 = &i3;
 
     IEvent* pe1 = &e1;
     IEvent* pe2 = &e2;
     IEvent* pe3 = &e3;
+    IEvent* pe4 = &e4;
 
-    for (auto* handler : {pi1, pi3})
+    for (auto* handler: {pi1, pi2, pi3})
     {
         std::cout << "----Handler=" << handler << std::endl;
-        for (auto* event : {pe1, pe2, pe3})
+        for (const auto* event: {pe1, pe2, pe3, pe4})
         {
             std::cout << "Event=" << event << " handle: ";
             handler->handle(*event);
             std::cout << std::endl;
         }
     }
-    return 0;
+
+  printHashes(collect_base_hashes<H::Event4>());
+  printHashes(collect_base_hashes<H::Event4_1>());
 }
