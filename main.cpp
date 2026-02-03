@@ -1,8 +1,5 @@
-#include "CollectBaseHashes.h"
-
-
 #include "ArrayView.h"
-
+#include "CollectBaseHashes.h"
 #include "EventDispatcher.h"
 #include "EventDispatcher2.h"
 #include "FunctionTraits.h"
@@ -78,7 +75,7 @@ void printHashes(const ArrayView2<uint64_t>& i_hashes)
   }
 }
 
-namespace H
+namespace HB
 {
   struct Event1 : public IEvent
   {
@@ -104,6 +101,28 @@ namespace H
   struct Event2_1 : Inherit<Event1_1>{};
   struct Event3_1 : Inherit<Event2_1>{};
   struct Event4_1 : Inherit<Event3_1>{};
+
+  struct HandlerBase : IHandler
+  {
+    void handle(const IEvent& i_event, ArrayView2<uint64_t> i_hashes) override
+    {
+      if (handleEvent<&HandlerBase::onEvent2_1>(i_event, i_hashes))
+        return;
+      if (handleEvent<&HandlerBase::handle1>(i_event, i_hashes))
+        return;
+    }
+    void handle1(const Event1_1& i_event)
+    {
+      std::cout << "HB::HandlerBase::handle(Event1_1)" << std::endl;
+    }
+
+    void onEvent2_1(const Event2_1& i_event)
+    {
+      std::cout << "HB::HandlerBase::onEvent2_1(Event2_1)" << std::endl;
+    }
+
+  };
+
 };
 
 int main()
@@ -137,6 +156,29 @@ int main()
         }
     }
 
-  printHashes(collect_base_hashes<H::Event4>());
-  printHashes(collect_base_hashes<H::Event4_1>());
+  printHashes(collect_base_hashes<HB::Event4>());
+  printHashes(collect_base_hashes<HB::Event4_1>());
+
+  HB::HandlerBase handlerBase;
+  HB::IHandler& hb = handlerBase;
+  HB::Event1_1 e1_1;
+  HB::Event2_1 e2_1;
+  HB::Event3_1 e3_1;
+  HB::Event4_1 e4_1;
+
+  std::cout << "e1_1\n";
+  HB::invoke(hb, e1_1);
+  printHashes(collect_base_hashes<HB::Event1_1>());
+
+  std::cout << "e2_1\n";
+  HB::invoke(hb, e2_1);
+  printHashes(collect_base_hashes<HB::Event2_1>());
+
+  std::cout << "e3_1\n";
+  HB::invoke(hb, e3_1);
+  printHashes(collect_base_hashes<HB::Event3_1>());
+
+  std::cout << "e4_1\n";
+  HB::invoke(hb, e4_1);
+  printHashes(collect_base_hashes<HB::Event4_1>());
 }

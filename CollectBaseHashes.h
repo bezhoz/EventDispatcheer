@@ -24,9 +24,9 @@ constexpr auto count_base_hashes(const size_t i = 0)
 }
 
 template<typename T, typename A>
-constexpr auto collect_base_hashes_int(A& hashes, size_t i = 0)
+constexpr auto collect_base_hashes_int(A& hashes, size_t i)
 {
-  hashes[i++] = type_hash<T>(); // корень
+  hashes[--i] = type_hash<T>(); // корень
   if constexpr (has_base_member<T>::value)
   {
     collect_base_hashes_int<typename T::Base>(hashes, i);
@@ -37,7 +37,7 @@ template<typename T>
 constexpr auto collect_base_hashes()
 {
   std::array<uint64_t, count_base_hashes<T>()> hashes{};
-  collect_base_hashes_int<T>(hashes);
+  collect_base_hashes_int<T>(hashes, hashes.size());
   return hashes;
 }
 
