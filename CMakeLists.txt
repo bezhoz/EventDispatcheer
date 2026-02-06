@@ -11,4 +11,4 @@ add_executable(t3
         CollectBaseHashes.h
         EventDispatcher.h
         EventDispatcher2.h
-        ArrayView.h)
+        ArrayView.h HashBasedEventDispatcher2.h)

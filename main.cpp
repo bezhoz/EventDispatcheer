@@ -4,6 +4,7 @@
 #include "EventDispatcher2.h"
 #include "FunctionTraits.h"
 #include "HashBasedEventDispatcher.h"
+#include "HashBasedEventDispatcher2.h"
 
 #include <iostream>
 #include <type_traits>
@@ -75,6 +76,12 @@ void printHashes(const ArrayView2<uint64_t>& i_hashes)
   }
 }
 
+template<typename T>
+void printHashes()
+{
+  printHashes(collect_base_hashes<T>());
+}
+
 namespace HB
 {
   struct Event1 : public IEvent
@@ -106,11 +113,9 @@ namespace HB
   {
     void handle(const IEvent& i_event, ArrayView2<uint64_t> i_hashes) override
     {
-      if (handleEvent<&HandlerBase::onEvent2_1>(i_event, i_hashes))
-        return;
-      if (handleEvent<&HandlerBase::handle1>(i_event, i_hashes))
-        return;
+      handleEventAll<&HandlerBase::onEvent2_1, &HandlerBase::handle1>(i_event, i_hashes);
     }
+    
     void handle1(const Event1_1& i_event)
     {
       std::cout << "HB::HandlerBase::handle(Event1_1)" << std::endl;
@@ -120,13 +125,68 @@ namespace HB
     {
       std::cout << "HB::HandlerBase::onEvent2_1(Event2_1)" << std::endl;
     }
+  };
+};
 
+namespace HB2
+{
+  struct EventBase{};
+  struct Event1: EventBase
+  {
+    using Base = EventBase;
   };
 
+  struct Event2: EventBase
+  {
+    using Base = EventBase;
+  };
+
+  struct Event1_1: Event1
+  {
+    using Base = Event1;
+  };
+
+  struct Event2_1: Event2
+  {
+    using Base = Event2;
+  };
+
+  struct Handler1
+  {
+    void handle1(const Event1& event)
+    {
+      std::cout << "Handler1::handle1::event = " << &event << std::endl;
+    }
+    void handle2(const Event2& event)
+    {
+      std::cout << "Handler1::handle2::event = " << &event << std::endl;
+    }
+  };
+
+  struct Handler2
+  {
+    void onEvent1(const Event1& event)
+    {
+      std::cout << "Handler2::onEvent1::event = " << &event << std::endl;
+    }
+    void onEvent2(const Event2& event)
+    {
+      std::cout << "Handler2::onEvent2::event = " << &event << std::endl;
+    }
+    void onEvent1_1(const Event1_1& event)
+    {
+      std::cout << "Handler2::onEvent1_1::event = " << &event << std::endl;
+    }
+    void onEvent2_1(const Event2_1& event)
+    {
+      std::cout << "Handler2::onEvent2_1::event = " << &event << std::endl;
+    }
+  };
 };
 
 int main()
 {
+  std::cout << "1 and 2 event system \n";
     Event1 e1;
     Event2 e2;
     Event3 e3;
@@ -156,8 +216,9 @@ int main()
         }
     }
 
-  printHashes(collect_base_hashes<HB::Event4>());
-  printHashes(collect_base_hashes<HB::Event4_1>());
+  std::cout << "\nhashes based 1 event system \n";
+  printHashes<HB::Event4>();
+  printHashes<HB::Event4_1>();
 
   HB::HandlerBase handlerBase;
   HB::IHandler& hb = handlerBase;
@@ -168,17 +229,39 @@ int main()
 
   std::cout << "e1_1\n";
   HB::invoke(hb, e1_1);
-  printHashes(collect_base_hashes<HB::Event1_1>());
+  printHashes<HB::Event1_1>();
 
   std::cout << "e2_1\n";
   HB::invoke(hb, e2_1);
-  printHashes(collect_base_hashes<HB::Event2_1>());
+  printHashes<HB::Event2_1>();
 
   std::cout << "e3_1\n";
   HB::invoke(hb, e3_1);
-  printHashes(collect_base_hashes<HB::Event3_1>());
+  printHashes<HB::Event3_1>();
 
   std::cout << "e4_1\n";
   HB::invoke(hb, e4_1);
-  printHashes(collect_base_hashes<HB::Event4_1>());
+  printHashes<HB::Event4_1>();
+
+  std::cout << "\nhashes based 2 event system \n";
+  {
+    HB2::Handler1 h1;
+    HB2::Handler2 h2;
+    HB2::InvokerContainer ic;
+    ic.connect<&HB2::Handler1::handle1>(h1);
+    ic.connect<&HB2::Handler1::handle2>(h1);
+    ic.connect<&HB2::Handler2::onEvent1>(h2);
+    ic.connect<&HB2::Handler2::onEvent2>(h2);
+    ic.connect<&HB2::Handler2::onEvent1_1>(h2);
+    ic.connect<&HB2::Handler2::onEvent2_1>(h2);
+    std::cout << "Event1----------\n";
+    ic.invoke(HB2::Event1{});
+    std::cout << "Event2----------\n";
+    ic.invoke(HB2::Event2{});
+    std::cout << "Event1_1----------\n";
+    ic.invoke(HB2::Event1_1{});
+    std::cout << "Event2_1----------\n";
+    ic.invoke(HB2::Event2_1{});
+  }
+
 }
