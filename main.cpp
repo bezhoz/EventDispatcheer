@@ -248,12 +248,12 @@ int main()
     HB2::Handler1 h1;
     HB2::Handler2 h2;
     HB2::InvokerContainer ic;
-    ic.connect<&HB2::Handler1::handle1>(h1);
-    ic.connect<&HB2::Handler1::handle2>(h1);
-    ic.connect<&HB2::Handler2::onEvent1>(h2);
-    ic.connect<&HB2::Handler2::onEvent2>(h2);
-    ic.connect<&HB2::Handler2::onEvent1_1>(h2);
-    ic.connect<&HB2::Handler2::onEvent2_1>(h2);
+    ic.connect<&HB2::Handler1::handle1,
+               &HB2::Handler1::handle2>(h1);
+    ic.connect<&HB2::Handler2::onEvent1,
+               &HB2::Handler2::onEvent2,
+               &HB2::Handler2::onEvent1_1,
+               &HB2::Handler2::onEvent2_1>(h2);
     std::cout << "Event1----------\n";
     ic.invoke(HB2::Event1{});
     std::cout << "Event2----------\n";

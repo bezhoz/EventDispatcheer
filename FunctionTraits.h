@@ -15,5 +15,13 @@ struct FunctionTraits<R(C::*)(A)>
 template<auto Method>
 using Argument = typename FunctionTraits<decltype(Method)>::Argument;
 
-template<auto Method>
-using Class = typename FunctionTraits<decltype(Method)>::Class;
+template<typename T,  typename ... TS>
+struct First
+{
+  using Type = T;
+};
+
+template<auto... Methods>
+using Class = typename FunctionTraits<typename First<decltype(Methods)...>::Type>::Class;
+
+
