@@ -5,6 +5,7 @@
 #include "FunctionTraits.h"
 #include "HashBasedEventDispatcher.h"
 #include "HashBasedEventDispatcher2.h"
+#include "HashBasedEventDispatcher3.h"
 
 #include <iostream>
 #include <type_traits>
@@ -263,5 +264,24 @@ int main()
     std::cout << "Event2_1----------\n";
     ic.invoke(HB2::Event2_1{});
   }
-
+  std::cout << "\nHashes based 3 event system \n";
+  {
+    HB2::Handler1 h1;
+    HB2::Handler2 h2;
+    HB3::InvokerContainer ic;
+    ic.connect<&HB2::Handler1::handle1,
+            &HB2::Handler1::handle2>(h1);
+    ic.connect<&HB2::Handler2::onEvent1,
+            &HB2::Handler2::onEvent2,
+            &HB2::Handler2::onEvent1_1,
+            &HB2::Handler2::onEvent2_1>(h2);
+    std::cout << "Event1----------\n";
+    ic.invoke(HB2::Event1{});
+    std::cout << "Event2----------\n";
+    ic.invoke(HB2::Event2{});
+    std::cout << "Event1_1----------\n";
+    ic.invoke(HB2::Event1_1{});
+    std::cout << "Event2_1----------\n";
+    ic.invoke(HB2::Event2_1{});
+  }
 }

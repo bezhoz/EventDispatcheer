@@ -1,7 +1,7 @@
 #pragma once
 
-#include "CollectBaseHashes.h"
 #include "FunctionTraits.h"
+#include "ArrayView.h"
 
 #include <memory>
 #include <optional>
@@ -10,7 +10,17 @@
 
 namespace HB2
 {
-  using Hash = const size_t*;
+  // primary template handles types that have no nested ::Base member:
+  template<class, class = void>
+  struct HasBaseMember : std::false_type
+  {
+  };
+
+// specialization recognizes types that do have a nested ::Base member:
+  template<class T>
+  struct HasBaseMember<T, std::void_t<typename T::Base>> : std::true_type
+  {
+  };
 
   template<typename T>
   struct TypeHashHolder
@@ -19,6 +29,8 @@ namespace HB2
   };
 
   template<typename T> static constexpr auto TypeHash = &TypeHashHolder<T>::i;
+
+  using Hash = const size_t*;
 
   template<auto T>
   struct ValueHashHolder
@@ -36,8 +48,6 @@ namespace HB2
   template<typename Event>
   struct HandlerItem
   {
-    using F = void (*)(void*, const Event&);
-
     void invoke(const Event& i_event) const
     {
       func(object, i_event);
@@ -45,17 +55,21 @@ namespace HB2
 
     template<auto Method>
     HandlerItem(Class<Method>& i_object, TemplateParameter<Method>):
+            object(static_cast<void*>(&i_object)),
+            hash(ValueHash<Method>),
             func([](void* object, const Event& event)
                  {
                    (static_cast<Class<Method>*>(object)->*Method)(event);
-                 }), object(static_cast<void*>(&i_object)),
-            hash(ValueHash<Method>)
+                 })
     {
     }
 
-    F func;
     void* object;
     Hash hash;
+  private:
+    using F = void (*)(void*, const Event& i_event);
+
+    F func;
   };
 
   struct IInvoker
@@ -65,31 +79,27 @@ namespace HB2
     virtual ~IInvoker() = 0;
   };
 
-  IInvoker::~IInvoker()
-  {
-  }
-
   struct HandlersInfo
   {
-    void setInvoked(const void* object)
+    inline void setInvoked(const void* object)
     {
       handlersInfo[object] = true;
     }
 
-    bool isInvoked(const void* object) const
+    inline bool isInvoked(const void* object) const
     {
       const auto it = handlersInfo.find(object);
       return it != end(handlersInfo) && it->second;
     }
 
-    void clearAll()
+    inline void clearAll()
     {
       for (auto&[_, invoked]: handlersInfo)
       {
         invoked = false;
       }
     }
-
+  private:
     std::unordered_map<const void*, bool> handlersInfo;
   };
 
@@ -101,12 +111,19 @@ namespace HB2
     {
     }
 
+    template<auto Method>
+    void connect(Class<Method>& i_object)
+    {
+      handlers.push_back(HandlerItem<Argument<Method>>(i_object, TemplateParameter<Method>()));
+    }
+    
     void invoke(const T& event)
     {
       const auto firstLevel = !isInInvokeProcess;
       isInInvokeProcess = true;
-      for (auto& handler: handlers)
+      for (size_t i = 0; i < handlers.size(); ++i)
       {
+        const auto& handler = handlers[i];
         if (handler.has_value() && !handlersInfo.isInvoked(handler->object))
         {
           handler->invoke(event);
@@ -138,14 +155,20 @@ namespace HB2
       removeEmpty();
     }
 
-    template<typename MethodType>
-    void disconnect(const void* object, MethodType method)
+    template<auto Method>
+    void disconnect(Class<Method>* object)
+    {
+      disconnect(object, ValueHash<Method>);
+    }
+
+  private:
+    void disconnect(const void* object, Hash hash)
     {
       for (auto& handler: handlers)
       {
         if (handler.has_value() &&
             handler->object == object &&
-            handler->hash == ValueHash<method>)
+            handler->hash == hash)
         {
           handler.reset();
           dirty = true;
@@ -168,12 +191,6 @@ namespace HB2
       dirty = false;
     }
 
-    template<auto Method>
-    void connect(Class<Method>& i_object)
-    {
-      handlers.push_back(HandlerItem<T>(i_object, TemplateParameter<Method>()));
-    }
-
     std::vector<std::optional<HandlerItem<T>>> handlers;
     HandlersInfo& handlersInfo;
     bool isInInvokeProcess = false;
@@ -182,16 +199,6 @@ namespace HB2
 
   struct InvokerContainer
   {
-    template<typename Event>
-    Invoker<Event>* findInvoker() const
-    {
-      static constexpr auto event_hash = TypeHash<Event>;
-      const auto it = invokers.find(event_hash);
-      return it == end(invokers)
-             ? nullptr
-             : static_cast<Invoker<Event>*>(it->second.get());
-    }
-
     template<typename T>
     void invoke(const T& event)
     {
@@ -201,7 +208,7 @@ namespace HB2
       {
         invoker->invoke(event);
       }
-      if constexpr (has_base_member<T>::value)
+      if constexpr (HasBaseMember<T>::value)
       {
         invoke<typename T::Base>(event);
       }
@@ -211,6 +218,53 @@ namespace HB2
         handlersInfo.clearAll();
         removeEmpty();
       }
+    }
+
+    template<auto... Methods>
+    void connect(Class<Methods...>& i_object)
+    {
+      (getOrCreateInvoker<Argument<Methods>>().template connect<Methods>(
+              i_object), ...);
+    }
+
+    template<auto Method>
+    void disconnect1(const Class<Method>& i_object)
+    {
+      if (auto* invoker = findInvoker<Argument<Method>>())
+      {
+        invoker->disconnect<Method>(&i_object);
+      }
+    }
+
+    template<auto... Methods>
+    void disconnect(const Class<Methods...>& i_object)
+    {
+      if constexpr(sizeof...(Methods) == 0)
+      {
+        for (auto&[_, invoker]: invokers)
+        {
+          invoker->disconnectAll(&i_object);
+        }
+      }
+      else
+      {
+        (disconnect1<Methods>(i_object), ...);
+      }
+      dirty = true;
+      removeEmpty();
+    }
+
+  private:
+    inline IInvoker* findInvoker(Hash eventHash) const
+    {
+      const auto it = invokers.find(eventHash);
+      return it == end(invokers) ? nullptr : it->second.get();
+    }
+
+    template<typename Event>
+    Invoker<Event>* findInvoker() const
+    {
+      return static_cast<Invoker<Event>*>(findInvoker(TypeHash<Event>));
     }
 
     template<typename Event>
@@ -223,47 +277,13 @@ namespace HB2
       return static_cast<Invoker<Event>&>(*(it->second));
     }
 
-    template<auto... Methods>
-    void connect(Class<Methods...>& i_object)
-    {
-      (getOrCreateInvoker<Argument<Methods>>().template connect<Methods>(
-              i_object), ...);
-    }
-
-    template<auto... Methods>
-    void disconnect(Class<Methods...>& i_object)
-    {
-      if constexpr(sizeof...(Methods) == 0)
-      {
-        for (auto&[_, invoker]: invokers)
-        {
-          invoker->disconnectAll(i_object);
-        }
-      }
-      else
-      {
-        (getOrCreateInvoker<Argument<Methods>>().disconnect(i_object, Methods), ...);
-      }
-      dirty = true;
-      removeEmpty();
-    }
-
-    void removeEmpty()
-    {
-      if (dirty && !isInInvokeProcess)
-      {
-        for (auto it = begin(invokers); it != end(invokers);)
-        {
-          it = it->second->isEmpty() ? invokers.erase(it) : next(it);
-        }
-      }
-      dirty = false;
-    }
+    void removeEmpty();
 
     std::unordered_map<Hash, std::unique_ptr<IInvoker>> invokers;
     HandlersInfo handlersInfo;
     bool isInInvokeProcess = false;
     bool dirty = false;
   };
+
 }
 

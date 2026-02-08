@@ -5,10 +5,5 @@ set(CMAKE_CXX_STANDARD 17)
 
 add_executable(t3
         main.cpp
-        HashBasedEventDispatcher.h
-        FunctionTraits.h
-        TypeHash.h
-        CollectBaseHashes.h
-        EventDispatcher.h
-        EventDispatcher2.h
-        ArrayView.h HashBasedEventDispatcher2.h)
+        HashBasedEventDispatcher2.cpp
+        HashBasedEventDispatcher3.cpp)
