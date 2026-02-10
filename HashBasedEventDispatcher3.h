@@ -3,6 +3,7 @@
 #include "FunctionTraits.h"
 #include "ArrayView.h"
 
+#include <limits>
 #include <optional>
 #include <unordered_map>
 #include <vector>
@@ -93,10 +94,23 @@ namespace HB3
 
     void* object;
     Hash hash;
+    size_t maxAllowedLevelOfInheritanceDepth = std::numeric_limits<size_t>::max();
 
   private:
     using F = void (*)(void*, const void*);
     F func;
+  };
+
+  template<auto ... Methods>
+  constexpr bool isSameObjectType()
+  {
+    return (std::is_same_v<Class<Methods...>, Class<Methods>> && ...);
+  }
+
+  template<auto ... Methods>
+  struct Register
+  {
+    static_assert(isSameObjectType<Methods...>());
   };
 
   struct HandlersInfo
@@ -126,20 +140,22 @@ namespace HB3
 
   struct Invoker
   {
-    explicit Invoker(HandlersInfo& i_handlersInfo);
-    void invoke(const void* event);
+    explicit Invoker(HandlersInfo& i_handlersInfo) : handlersInfo(i_handlersInfo)
+    {
+    }
+
+    inline void connect(const HandlerItem& i_handlerItem)
+    {
+      handlers.push_back(i_handlerItem);
+    }
+
+    void invoke(const void* event, std::size_t initialLevelOfInheritanceDepth = 0);
+    size_t disconnectAll(const void* object);
+    size_t disconnect(const void* object, const Hash methodHash);
 
     inline bool isEmpty() const
     {
       return handlers.empty();
-    }
-
-    size_t disconnectAll(const void* object);
-    size_t disconnect(const void* object, const Hash methodHash);
-
-    inline void connect(const HandlerItem i_handlerItem)
-    {
-      handlers.push_back(i_handlerItem);
     }
 
   private:
@@ -151,65 +167,83 @@ namespace HB3
     bool dirty = false;
   };
 
-  struct InvokerContainer
+  struct EventMethodHashes
   {
-    template<typename Event>
-    void invoke(const Event& event)
-    {
-      static constexpr auto eventHashes = collectBaseHashes<Event>();
-      invoke(&event, eventHashes);
-    }
+    Hash event;
+    Hash method;
+  };
 
-    template<auto... Methods>
-    void connect(Class<Methods...>& i_object)
+  struct InvokerContainerImpl
+  {
+    inline void connect(Hash eventHash, const HandlerItem& handlerItem)
     {
-      (getOrCreateInvoker(TypeHash<Argument<Methods>>).connect(
-              HandlerItem(i_object, TemplateParameter<Methods>())), ...);
+      getOrCreateInvoker(eventHash).connect(handlerItem);
     }
-
-    template<auto... Methods>
-    size_t disconnect(const Class<Methods...>& i_object)
-    {
-      size_t disconnected = 0;
-      if constexpr(sizeof...(Methods) == 0)
-      {
-        for (auto&[_, invoker]: invokers)
-        {
-          disconnected += invoker.disconnectAll(&i_object);
-        }
-      }
-      else
-      {
-        disconnected = (disconnect1(&i_object, TypeHash<Argument<Methods>>,
-                                    ValueHash<Methods>) + ...);
-      }
-      dirty = disconnected > 0;
-      removeEmpty();
-      return disconnected;
-    }
+    void invoke(const void* event, const ArrayView2<Hash> eventHashes);
+    size_t disconnectAll(const void* i_object);
+    size_t disconnect(const void* i_object, const ArrayView2<EventMethodHashes> i_hashes);
 
   private:
-    void invoke(const void* event, const ArrayView2<Hash> eventHashes);
-    Invoker& getOrCreateInvoker(const Hash eventHash);
-    void removeEmpty();
-
     inline Invoker* findInvoker(const Hash eventHash)
     {
       const auto it = invokers.find(eventHash);
       return it == end(invokers) ? nullptr : &it->second;
     }
 
-    inline size_t disconnect1(const void* i_object, const Hash eventHash,
-                              const Hash methodHash)
-    {
-      auto* invoker = findInvoker(eventHash);
-      return invoker != nullptr ? invoker->disconnect(i_object, methodHash) : 0;
-    }
+    Invoker& getOrCreateInvoker(const Hash eventHash);
+    void removeEmpty();
 
+    inline size_t disconnect1(const void* i_object, const EventMethodHashes& hash)
+    {
+      auto* invoker = findInvoker(hash.event);
+      return invoker != nullptr ? invoker->disconnect(i_object, hash.method) : 0;
+    }
+    
     std::unordered_map<Hash, Invoker> invokers;
     HandlersInfo handlersInfo;
     bool isInInvokeProcess = false;
     bool dirty = false;
+  };
+  
+  struct InvokerContainer
+  {
+    template<typename Event>
+    void invoke(const Event& event)
+    {
+      static constexpr auto eventHashes = collectBaseHashes<Event>();
+      invokerContainerImpl.invoke(&event, eventHashes);
+    }
+
+    template<auto ...Methods>
+    void connect(Class<Methods...>& i_object, Register<Methods...>)
+    {
+      connect<Methods...>(i_object);
+    }
+
+    template<auto... Methods>
+    void connect(Class<Methods...>& i_object)
+    {
+      (invokerContainerImpl.connect(TypeHash<Argument<Methods>>,
+                                    HandlerItem(i_object,
+                                                TemplateParameter<Methods>())), ...);
+    }
+
+    template<auto... Methods>
+    size_t disconnect(const Class<Methods...>& i_object)
+    {
+      if constexpr(sizeof...(Methods) == 0)
+      {
+        return invokerContainerImpl.disconnectAll(&i_object);
+      }
+      else
+      {
+        return invokerContainerImpl.disconnect(&i_object, {EventMethodHashes{
+                TypeHash<Argument<Methods>>, ValueHash<Methods>}...});
+      }
+    }
+
+  private:
+    InvokerContainerImpl invokerContainerImpl;
   };
 }
 

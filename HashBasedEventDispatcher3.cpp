@@ -2,11 +2,7 @@
 
 namespace HB3
 {
-  Invoker::Invoker(HandlersInfo& i_handlersInfo) : handlersInfo(i_handlersInfo)
-  {
-  }
-
-  void Invoker::invoke(const void* event)
+  void Invoker::invoke(const void* event, std::size_t initialLevelOfInheritanceDepth)
   {
     const auto firstLevel = !isInInvokeProcess;
     isInInvokeProcess = true;
@@ -16,7 +12,8 @@ namespace HB3
     for (size_t i = 0; i < handlers.size(); ++i)
     {
       const auto& handler = handlers[i];
-      if (handler.has_value() && !handlersInfo.isInvoked(handler->object))
+      if (handler.has_value() && !handlersInfo.isInvoked(handler->object) &&
+          handler->maxAllowedLevelOfInheritanceDepth > initialLevelOfInheritanceDepth)
       {
         handler->invoke(event);
         handlersInfo.setInvoked(handler->object);
@@ -77,15 +74,16 @@ namespace HB3
     dirty = false;
   }
 
-  void InvokerContainer::invoke(const void* event, const ArrayView2<Hash> eventHashes)
+  void InvokerContainerImpl::invoke(const void* event, const ArrayView2<Hash> eventHashes)
   {
     const auto firstLevel = !isInInvokeProcess;
     isInInvokeProcess = true;
+    const auto initialLevelOfInherinaceDepth = eventHashes.size();
     for (auto i = eventHashes.size(); i > 0; --i)
     {
       if (auto* invoker = findInvoker(eventHashes[i - 1]))
       {
-        invoker->invoke(event);
+        invoker->invoke(event, initialLevelOfInherinaceDepth);
       }
     }
     if (firstLevel)
@@ -96,7 +94,7 @@ namespace HB3
     }
   }
 
-  Invoker& InvokerContainer::getOrCreateInvoker(const Hash eventHash)
+  Invoker& InvokerContainerImpl::getOrCreateInvoker(const Hash eventHash)
   {
     const auto findedIt = invokers.find(eventHash);
     const auto it =
@@ -106,7 +104,7 @@ namespace HB3
     return it->second;
   }
 
-  void InvokerContainer::removeEmpty()
+  void InvokerContainerImpl::removeEmpty()
   {
     if (dirty && !isInInvokeProcess)
     {
@@ -116,6 +114,30 @@ namespace HB3
       }
     }
     dirty = false;
+  }
+
+  size_t InvokerContainerImpl::disconnectAll(const void* i_object)
+  {
+    size_t disconnected = 0;
+    for (auto&[_, invoker]: invokers)
+    {
+      disconnected += invoker.disconnectAll(i_object);
+    }
+    dirty = disconnected > 0;
+    removeEmpty();
+    return disconnected;
+  }
+
+  size_t InvokerContainerImpl::disconnect(const void* i_object, const ArrayView2<EventMethodHashes> i_hashes)
+  {
+    size_t disconnected = 0;
+    for (int i = 0; i < i_hashes.size(); ++i)
+    {
+      disconnected += disconnect1(i_object, i_hashes[i]);
+    }
+    dirty = disconnected > 0;
+    removeEmpty();
+    return disconnected;
   }
 }
 
