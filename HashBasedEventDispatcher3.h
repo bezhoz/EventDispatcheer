@@ -73,12 +73,31 @@ namespace HB3
   {
   };
 
-  struct HandlerItem
+  using TypeId = Hash;
+  using MethodId = Hash;
+
+  struct ShortTypeInfo
+  {
+    constexpr ShortTypeInfo(ArrayView2<TypeId> i_TypeInfo) : typeId(i_TypeInfo.back()),
+                                                   depthOfInheritance(
+                                                           i_TypeInfo.size())
+    {
+    }
+
+    constexpr inline bool empty() const
+    {
+      return depthOfInheritance == 0;
+    }
+
+    TypeId typeId;
+    size_t depthOfInheritance;
+  };
+
+  struct FunctionView
   {
     template<auto Method>
-    HandlerItem(Class<Method>& i_object, TemplateParameter<Method>):
+    FunctionView(Class<Method>& i_object, TemplateParameter<Method>):
             object(static_cast<void*>(&i_object)),
-            hash(ValueHash<Method>),
             func([](void* object, const void* event)
                  {
                    (static_cast<Class<Method>*>(object)->*Method)(
@@ -92,13 +111,40 @@ namespace HB3
       func(object, i_event);
     }
 
-    void* object;
-    Hash hash;
-    size_t maxAllowedLevelOfInheritanceDepth = std::numeric_limits<size_t>::max();
+    inline const void* getObject() const
+    {
+      return object;
+    }
 
   private:
     using F = void (*)(void*, const void*);
+    void* object;
     F func;
+  };
+
+  struct Handler
+  {
+    template<auto Method>
+    Handler(Class<Method>& i_object, TemplateParameter<Method> method):
+            fv(i_object, method), methodId(ValueHash<Method>)
+    {
+    }
+
+    inline void invoke(const void* i_event) const
+    {
+      fv.invoke(i_event);
+    }
+
+    inline const void* getObject() const
+    {
+      return fv.getObject();
+    }
+
+    MethodId methodId;
+    std::vector<ArrayView2<TypeId>> notProcessesEvents;
+
+  private:
+    FunctionView fv;
   };
 
   template<auto ... Methods>
@@ -113,94 +159,225 @@ namespace HB3
     static_assert(isSameObjectType<Methods...>());
   };
 
-  struct HandlersInfo
-  {
-    inline void setInvoked(const void* object)
-    {
-      handlersInfo[object] = true;
-    }
-
-    inline bool isInvoked(const void* object) const
-    {
-      const auto it = handlersInfo.find(object);
-      return it != end(handlersInfo) && it->second;
-    }
-
-    inline void clearAll()
-    {
-      for (auto&[_, invoked]: handlersInfo)
-      {
-        invoked = false;
-      }
-    }
-
-  private:
-    std::unordered_map<const void*, bool> handlersInfo;
-  };
-
   struct Invoker
   {
-    explicit Invoker(HandlersInfo& i_handlersInfo) : handlersInfo(i_handlersInfo)
+    explicit Invoker()
     {
     }
 
-    inline void connect(const HandlerItem& i_handlerItem)
+    inline void append(const Handler& i_handlerItem)
     {
       handlers.push_back(i_handlerItem);
     }
 
-    void invoke(const void* event, std::size_t initialLevelOfInheritanceDepth = 0);
-    size_t disconnectAll(const void* object);
-    size_t disconnect(const void* object, const Hash methodHash);
+    template<typename F>
+    void invokeIf(const void* event, F isInvokeEnabled)
+    {
+      const auto firstLevel = !isInInvokeProcess;
+      isInInvokeProcess = true;
+      // нельзя использовать range for
+      // при увеличении длины массива handlers он может быть перенесен в другое
+      // место в памяти и все итераторы станут невалидными
+      for (size_t i = 0; i < handlers.size(); ++i)
+      {
+        const auto& handler = handlers[i];
+        if (handler.has_value() && isInvokeEnabled(*handler))
+        {
+          handler->invoke(event);
+        }
+      }
+      if (firstLevel)
+      {
+        isInInvokeProcess = false;
+        removeEmpty();
+      }
+    }
+
+    inline bool isObjectExists(const void* i_object) const
+    {
+      return std::find_if(begin(handlers), end(handlers),
+                          [i_object](const auto& i_handler)
+                          {
+                            return i_handler.has_value() &&
+                                   i_handler->getObject() == i_object;
+                          }) != end(handlers);
+    }
+
+    void setNotProcessedEvents(const void* i_object,
+                               std::vector<ArrayView2<Hash>>&& notProcessedEvents)
+    {
+      for (auto& handler: handlers)
+      {
+        if (handler.has_value() && handler->getObject() == i_object)
+        {
+          handler->notProcessesEvents = std::move(notProcessedEvents);
+        }
+      }
+    }
+
+    void invoke(const void* event);
+    void invoke(const void* event, ArrayView2<TypeId> i_eventTypes);
+
+    template<typename F>
+    inline size_t removeIf(const void* object, F shouldRemove)
+    {
+      size_t disconnected = 0;
+      for (auto& handler: handlers)
+      {
+        if (handler.has_value() &&
+            handler->getObject() == object &&
+            shouldRemove(*handler))
+        {
+          handler.reset();
+          ++disconnected;
+        }
+      }
+      dirty = disconnected > 0;
+      removeEmpty();
+      return disconnected;
+    }
+
+    size_t disconnect(const void* object);
+    size_t disconnect(const void* object, const MethodId methodHash);
 
     inline bool isEmpty() const
     {
       return handlers.empty();
     }
 
+
   private:
     void removeEmpty();
 
-    std::vector<std::optional<HandlerItem>> handlers;
-    HandlersInfo& handlersInfo;
+    std::vector<std::optional<Handler>> handlers;
     bool isInInvokeProcess = false;
     bool dirty = false;
   };
 
-  struct EventMethodHashes
+  struct EventMethodType
   {
-    Hash event;
-    Hash method;
+    TypeId event;
+    MethodId method;
+  };
+
+  inline bool isBaseOf(const ShortTypeInfo i_base,
+                       const ArrayView2<TypeId> i_derived)
+  {
+    return i_base.depthOfInheritance > 0 &&
+           i_derived.size() > i_base.depthOfInheritance &&
+           i_base.typeId == i_derived[i_base.depthOfInheritance - 1];
   };
 
   struct InvokerContainerImpl
   {
-    inline void connect(Hash eventHash, const HandlerItem& handlerItem)
+    inline void registerType(const ArrayView2<TypeId> typeInfo)
     {
-      getOrCreateInvoker(eventHash).connect(handlerItem);
+      eventTypes.try_emplace(typeInfo.back(),
+                             std::vector<TypeId>{typeInfo.begin(),
+                                                 typeInfo.end()});
     }
-    void invoke(const void* event, const ArrayView2<Hash> eventHashes);
-    size_t disconnectAll(const void* i_object);
-    size_t disconnect(const void* i_object, const ArrayView2<EventMethodHashes> i_hashes);
+
+    inline void connect(const ArrayView2<TypeId> eventType,
+                        const Handler& handler)
+    {
+      invokers[eventType.back()].append(handler);
+      registerType(eventType);
+      updateDependencies(handler.getObject(), eventType);
+    }
+
+    inline ArrayView2<TypeId> getTypeInfo(const TypeId i_typeId)
+    {
+      const auto it = eventTypes.find(i_typeId);
+      return it == end(eventTypes) ? ArrayView2<TypeId>() : it->second;
+    }
+
+    static void appendMostBasedType(std::vector<ArrayView2<TypeId>>& i_types, ArrayView2<TypeId> newType)
+    {
+      bool processed = false;
+      for (auto& notProcessedEventHashes: i_types)
+      {
+        if (isBaseOf(newType, notProcessedEventHashes))
+        {
+          notProcessedEventHashes = newType;
+          processed = true;
+          break;
+        }
+        if (isBaseOf(notProcessedEventHashes, newType))
+        {
+          processed = true;
+          break;
+        }
+      }
+      if (!processed)
+      {
+        i_types.push_back(newType);
+      }
+    }
+
+    inline std::vector<ArrayView2<TypeId>> getDerivedTree(const void* i_object,
+                                                        const ShortTypeInfo i_eventType)
+    {
+      std::vector<ArrayView2<TypeId>> notProcessedEventsTypes;
+      if (i_eventType.empty())
+      {
+        return notProcessedEventsTypes;
+      }
+      for (const auto&[derivedEventTypeId, invoker]: invokers)
+      {
+        const auto derivedEventType = getTypeInfo(derivedEventTypeId);
+        if (isBaseOf(i_eventType, derivedEventType))
+        {
+          if (invoker.isObjectExists(i_object))
+          {
+            appendMostBasedType(notProcessedEventsTypes, derivedEventType);
+          }
+        }
+      }
+      return notProcessedEventsTypes;
+    }
+
+    inline void updateDependencies(const void* i_object,
+                                   const ArrayView2<TypeId> i_eventType)
+    {
+      auto eventType = i_eventType;
+      while (!eventType.empty())
+      {
+        if (auto* invoker = findInvoker(eventType.back()))
+        {
+          invoker->setNotProcessedEvents(i_object, getDerivedTree(i_object, eventType));
+        }
+        --eventType;
+      }
+    }
+
+    void invoke(const void* i_event, const ArrayView2<TypeId> i_eventType);
+    size_t disconnect(const void* i_object);
+    size_t disconnect(const void* i_object,
+                      const ArrayView2<EventMethodType> i_eventMethodTypes);
 
   private:
-    inline Invoker* findInvoker(const Hash eventHash)
+    inline Invoker* findInvoker(const TypeId eventTypeId)
     {
-      const auto it = invokers.find(eventHash);
+      const auto it = invokers.find(eventTypeId);
       return it == end(invokers) ? nullptr : &it->second;
     }
 
-    Invoker& getOrCreateInvoker(const Hash eventHash);
     void removeEmpty();
 
-    inline size_t disconnect1(const void* i_object, const EventMethodHashes& hash)
+    inline size_t disconnect1(const void* i_object,
+                              const EventMethodType hash)
     {
-      auto* invoker = findInvoker(hash.event);
-      return invoker != nullptr ? invoker->disconnect(i_object, hash.method) : 0;
+      if (auto* invoker = findInvoker(hash.event))
+      {
+        const auto disconnected = invoker->disconnect(i_object, hash.method);
+        updateDependencies(i_object, getTypeInfo(hash.event));
+        return disconnected;
+      }
+      return 0;
     }
-    
-    std::unordered_map<Hash, Invoker> invokers;
-    HandlersInfo handlersInfo;
+
+    std::unordered_map<TypeId, Invoker> invokers;
+    std::unordered_map<TypeId, std::vector<TypeId>> eventTypes;
     bool isInInvokeProcess = false;
     bool dirty = false;
   };
@@ -210,8 +387,8 @@ namespace HB3
     template<typename Event>
     void invoke(const Event& event)
     {
-      static constexpr auto eventHashes = collectBaseHashes<Event>();
-      invokerContainerImpl.invoke(&event, eventHashes);
+      static constexpr auto eventTypeInfo = collectBaseHashes<Event>();
+      invokerContainerImpl.invoke(&event, eventTypeInfo);
     }
 
     template<auto ...Methods>
@@ -223,9 +400,11 @@ namespace HB3
     template<auto... Methods>
     void connect(Class<Methods...>& i_object)
     {
-      (invokerContainerImpl.connect(TypeHash<Argument<Methods>>,
-                                    HandlerItem(i_object,
-                                                TemplateParameter<Methods>())), ...);
+      // создается временный array на который потом ссылаютя через arrayview
+      // нужно переделать
+      (invokerContainerImpl.connect(collectBaseHashes<Argument<Methods>>(),
+                                    Handler(i_object,
+                                            TemplateParameter<Methods>())), ...);
     }
 
     template<auto... Methods>
@@ -233,11 +412,11 @@ namespace HB3
     {
       if constexpr(sizeof...(Methods) == 0)
       {
-        return invokerContainerImpl.disconnectAll(&i_object);
+        return invokerContainerImpl.disconnect(&i_object);
       }
       else
       {
-        return invokerContainerImpl.disconnect(&i_object, {EventMethodHashes{
+        return invokerContainerImpl.disconnect(&i_object, {EventMethodType{
                 TypeHash<Argument<Methods>>, ValueHash<Methods>}...});
       }
     }

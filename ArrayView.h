@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <vector>
 
 template<typename T>
 struct ArrayView
@@ -40,20 +41,66 @@ template<typename T>
 struct ArrayView2
 {
   template<std::size_t S>
-  ArrayView2(const std::array<T, S>& i_array): d_array(i_array.data()),
+  constexpr ArrayView2(const std::array<T, S>& i_array): d_array(i_array.data()),
                                               d_size(i_array.size())
   {}
 
-  std::size_t size() const
+  constexpr ArrayView2(const std::vector<T>& i_array): d_array(i_array.data()),
+                                              d_size(i_array.size())
+  {}
+
+  constexpr ArrayView2(): d_array(nullptr), d_size(0)
+  {}
+
+  constexpr std::size_t size() const
   {
     return d_size;
   }
 
-  const T& operator[](std::size_t i_pos) const
+  constexpr bool empty() const
+  {
+    return d_size == 0;
+  }
+
+  constexpr const T& back() const
+  {
+    return d_array[size() - 1];
+  }
+
+  constexpr const T* begin() const
+  {
+    return d_array;
+  }
+
+  constexpr const T* end() const
+  {
+    return d_array + size();
+  }
+
+  constexpr const T& operator[](std::size_t i_pos) const
   {
     return d_array[i_pos];
   }
+
+  constexpr ArrayView2 decrease_size_by1()
+  {
+    ArrayView2 result;
+    result.d_array = d_array;
+    result.d_size = d_size > 0 ? d_size - 1 : 0;
+    return result;
+  }
+
+  ArrayView2& operator--()
+  {
+    if (d_size > 0)
+    {
+      --d_size;
+    }
+    return *this;
+  }
+
 private:
-  const std::size_t d_size;
+  std::size_t d_size;
   const T* d_array;
 };
+
