@@ -6,15 +6,15 @@ namespace HB3
 {
 
   constexpr bool isBaseOrEqual(const ShortTypeInfo i_base,
-                               const ArrayView2<Hash> i_derived)
+                               const ArrayView2<TypeId> i_derived)
   {
     return !i_base.empty() &&
            i_derived.size() >= i_base.depthOfInheritance &&
            i_base.typeId == i_derived[i_base.depthOfInheritance - 1];
   }
 
-  constexpr bool isBaseOrEqual(const ArrayView2<ArrayView2<Hash>> i_bases,
-                               const ArrayView2<Hash> i_derived)
+  constexpr bool isBaseOrEqual(const ArrayView2<ArrayView2<TypeId>> i_bases,
+                               const ArrayView2<TypeId> i_derived)
   {
     return std::any_of(i_bases.begin(), i_bases.end(),
                        [i_derived](const auto base)
@@ -94,11 +94,20 @@ namespace HB3
 
   void InvokerContainerImpl::removeEmpty()
   {
-    if (dirty && !isInInvokeProcess)
+    if (!dirty || isInInvokeProcess)
     {
-      for (auto it = begin(invokers); it != end(invokers);)
+      return;
+    }
+    for (auto it = begin(invokers); it != end(invokers);)
+    {
+      if (it->second.isEmpty())
       {
-        it = it->second.isEmpty() ? invokers.erase(it) : next(it);
+        it = invokers.erase(it);
+        eventTypes.erase(it->first);
+      }
+      else
+      {
+        ++it;
       }
     }
     dirty = false;

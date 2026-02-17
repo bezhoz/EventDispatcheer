@@ -245,11 +245,11 @@ namespace HB3
       return handlers.empty();
     }
 
+    std::vector<std::optional<Handler>> handlers;
 
   private:
     void removeEmpty();
 
-    std::vector<std::optional<Handler>> handlers;
     bool isInInvokeProcess = false;
     bool dirty = false;
   };
@@ -263,7 +263,7 @@ namespace HB3
   inline bool isBaseOf(const ShortTypeInfo i_base,
                        const ArrayView2<TypeId> i_derived)
   {
-    return i_base.depthOfInheritance > 0 &&
+    return !i_base.empty() > 0 &&
            i_derived.size() > i_base.depthOfInheritance &&
            i_base.typeId == i_derived[i_base.depthOfInheritance - 1];
   };
@@ -282,7 +282,7 @@ namespace HB3
     {
       invokers[eventType.back()].append(handler);
       registerType(eventType);
-      updateDependencies(handler.getObject(), eventType);
+      updateDependencies(handler.getObject());
     }
 
     inline ArrayView2<TypeId> getTypeInfo(const TypeId i_typeId)
@@ -291,65 +291,126 @@ namespace HB3
       return it == end(eventTypes) ? ArrayView2<TypeId>() : it->second;
     }
 
-    static void appendMostBasedType(std::vector<ArrayView2<TypeId>>& i_types, ArrayView2<TypeId> newType)
+    template<typename T>
+    struct TreeNode
     {
-      bool processed = false;
-      for (auto& notProcessedEventHashes: i_types)
+      T value;
+      std::vector<TreeNode<T>> subTree;
+    };
+
+    struct EventHandlers
+    {
+      ArrayView2<TypeId> eventTypeInfo;
+      std::vector<Handler*> handlers;
+    };
+
+    using EventHandlersTreeNode = TreeNode<EventHandlers>;
+
+    inline EventHandlersTreeNode* updateTreeFrom(
+            std::vector<EventHandlersTreeNode>& result,
+            const ArrayView2<TypeId> newTypeInfo, Handler& handler)
+    {
+      for (auto& treeNode: result)
       {
-        if (isBaseOf(newType, notProcessedEventHashes))
+        if (isBaseOf(treeNode.value.eventTypeInfo, newTypeInfo))
         {
-          notProcessedEventHashes = newType;
-          processed = true;
-          break;
+          return updateTreeFrom(treeNode.subTree, newTypeInfo, handler);
         }
-        if (isBaseOf(notProcessedEventHashes, newType))
+        if (isBaseOf(newTypeInfo, treeNode.value.eventTypeInfo))
         {
-          processed = true;
-          break;
+          auto extractedTreeNode = std::move(treeNode);
+          treeNode.value.eventTypeInfo = newTypeInfo;
+          treeNode.value.handlers = decltype(treeNode.value.handlers){&handler};
+          treeNode.subTree =
+                  decltype(treeNode.subTree){std::move(extractedTreeNode)};
+          return &treeNode;
+        }
+        if (newTypeInfo.back() == treeNode.value.eventTypeInfo.back())
+        {
+          treeNode.value.handlers.push_back(&handler);
+          return &treeNode;
         }
       }
-      if (!processed)
-      {
-        i_types.push_back(newType);
-      }
+      result.push_back({{newTypeInfo, {&handler}}});
+      return &result.back();
     }
 
-    inline std::vector<ArrayView2<TypeId>> getDerivedTree(const void* i_object,
-                                                        const ShortTypeInfo i_eventType)
+    inline void updateTreeFrom(
+            std::vector<EventHandlersTreeNode>& result,
+            Invoker& invoker, const TypeId eventTypeId,
+            const void* i_object)
     {
-      std::vector<ArrayView2<TypeId>> notProcessedEventsTypes;
-      if (i_eventType.empty())
+      EventHandlersTreeNode* eventHandlersTreeNode = nullptr;
+      for (auto& handler: invoker.handlers)
       {
-        return notProcessedEventsTypes;
-      }
-      for (const auto&[derivedEventTypeId, invoker]: invokers)
-      {
-        const auto derivedEventType = getTypeInfo(derivedEventTypeId);
-        if (isBaseOf(i_eventType, derivedEventType))
+        if (handler.has_value() && handler->getObject() == i_object)
         {
-          if (invoker.isObjectExists(i_object))
+          if (eventHandlersTreeNode)
           {
-            appendMostBasedType(notProcessedEventsTypes, derivedEventType);
+            eventHandlersTreeNode->value.handlers.push_back(&*handler);
+          }
+          else
+          {
+            const auto eventTypeInfo = getTypeInfo(eventTypeId);
+            eventHandlersTreeNode = updateTreeFrom(result, eventTypeInfo, *handler);
           }
         }
       }
-      return notProcessedEventsTypes;
     }
 
-    inline void updateDependencies(const void* i_object,
-                                   const ArrayView2<TypeId> i_eventType)
+    inline std::vector<EventHandlersTreeNode> makeInvokersTree(const void* i_object)
     {
-      auto eventType = i_eventType;
-      while (!eventType.empty())
+      std::vector<EventHandlersTreeNode> result;
+      for (auto& [eventTypeId, invoker]: invokers)
       {
-        if (auto* invoker = findInvoker(eventType.back()))
+        updateTreeFrom(result, invoker, eventTypeId, i_object);
+      }
+      return result;
+    }
+
+    inline static std::vector<ArrayView2<TypeId>> getDirectСhildren(
+            const std::vector<EventHandlersTreeNode>& i_tree,
+            const ArrayView2<TypeId> eventTypeInfo)
+    {
+      std::vector<ArrayView2<TypeId>> result;
+      for (const auto& node: i_tree)
+      {
+        if (node.value.eventTypeInfo.back() == eventTypeInfo.back())
         {
-          invoker->setNotProcessedEvents(i_object, getDerivedTree(i_object, eventType));
+          std::transform(begin(node.subTree), end(node.subTree),
+                         std::back_inserter(result), [](const auto& node)
+                         {
+                           return node.value.eventTypeInfo;
+                         });
+          return result;
         }
-        --eventType;
+        if (isBaseOf(node.value.eventTypeInfo, eventTypeInfo))
+        {
+          return getDirectСhildren(node.subTree, eventTypeInfo);
+        }
+      }
+      return result;
+    }
+
+    inline void updateDependencies(std::vector<EventHandlersTreeNode>& nodes)
+    {
+      for (auto& node : nodes)
+      {
+         const auto directChildren = getDirectСhildren(nodes, node.value.eventTypeInfo);
+         for (auto* handler: node.value.handlers)
+         {
+           handler->notProcessesEvents = directChildren;
+         }
+        updateDependencies(node.subTree);
       }
     }
 
+    inline void updateDependencies(const void* i_object)
+    {
+      auto invokersTree = makeInvokersTree(i_object);
+      updateDependencies(invokersTree);
+    }
+    
     void invoke(const void* i_event, const ArrayView2<TypeId> i_eventType);
     size_t disconnect(const void* i_object);
     size_t disconnect(const void* i_object,
@@ -370,7 +431,7 @@ namespace HB3
       if (auto* invoker = findInvoker(hash.event))
       {
         const auto disconnected = invoker->disconnect(i_object, hash.method);
-        updateDependencies(i_object, getTypeInfo(hash.event));
+        updateDependencies(i_object);
         return disconnected;
       }
       return 0;
