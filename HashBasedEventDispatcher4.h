@@ -121,17 +121,24 @@ namespace HB4
     F func;
   };
 
+  template<typename T>
+  struct Numbered
+  {
+    Numbered(const size_t i_pos, const T& i_value): pos(i_pos), value(i_value)
+    {};
+    
+    size_t pos;
+    std::optional<T> value;
+  };
+
+  using NumberedFunctionView = Numbered<FunctionView>;
+
   struct Handler
   {
     template<auto Method>
     Handler(Class<Method>& i_object, TemplateParameter<Method> method):
             fv(i_object, method), methodId(ValueHash<Method>)
     {
-    }
-
-    inline void invoke(const void* i_event) const
-    {
-      fv.invoke(i_event);
     }
 
     inline const void* getObject() const
@@ -169,29 +176,6 @@ namespace HB4
       handlers.push_back(i_handlerItem);
     }
 
-    template<typename F>
-    void invokeIf(const void* event, F isInvokeEnabled)
-    {
-      const auto firstLevel = !isInInvokeProcess;
-      isInInvokeProcess = true;
-      // нельзя использовать range for
-      // при увеличении длины массива handlers он может быть перенесен в другое
-      // место в памяти и все итераторы станут невалидными
-      for (size_t i = 0; i < handlers.size(); ++i)
-      {
-        const auto& handler = handlers[i];
-        if (handler.has_value() && isInvokeEnabled(*handler))
-        {
-          handler->invoke(event);
-        }
-      }
-      if (firstLevel)
-      {
-        isInInvokeProcess = false;
-        removeEmpty();
-      }
-    }
-
     inline bool isObjectExists(const void* i_object) const
     {
       return std::find_if(begin(handlers), end(handlers),
@@ -213,9 +197,6 @@ namespace HB4
         }
       }
     }
-
-    void invoke(const void* event);
-    void invoke(const void* event, ArrayView2<TypeId> i_eventTypes);
 
     template<typename F>
     inline size_t removeIf(const void* object, F shouldRemove)
@@ -259,9 +240,9 @@ namespace HB4
     {
     }
 
-    inline void append(const FunctionView& i_function)
+    inline void append(const size_t i_pos, const FunctionView& i_function)
     {
-      functions.push_back(i_function);
+      functions.emplace_back(i_pos, i_function);
     }
 
     void invoke(const void* event)
@@ -274,9 +255,9 @@ namespace HB4
       for (size_t i = 0; i < functions.size(); ++i)
       {
         const auto& function = functions[i];
-        if (function.has_value())
+        if (function.value.has_value())
         {
-          function->invoke(event);
+          function.value->invoke(event);
         }
       }
       if (firstLevel)
@@ -289,7 +270,7 @@ namespace HB4
     inline size_t disconnect(const void* object)
     {
       size_t disconnected = 0;
-      for (auto& function: functions)
+      for (auto& [pos, function]: functions)
       {
         if (function.has_value() && function->getObject() == object)
         {
@@ -307,7 +288,16 @@ namespace HB4
       return functions.empty();
     }
 
-    std::vector<std::optional<FunctionView>> functions;
+    inline void sort()
+    {
+      std::sort(begin(functions), end(functions),
+                [](const auto& left, const auto& right)
+                {
+                  return left.pos < right.pos;
+                });
+    }
+
+    std::vector<NumberedFunctionView> functions;
 
   private:
     void removeEmpty();
@@ -325,7 +315,7 @@ namespace HB4
   inline bool isBaseOf(const ShortTypeInfo i_base,
                        const ArrayView2<TypeId> i_derived)
   {
-    return !i_base.empty() > 0 &&
+    return !i_base.empty() &&
            i_derived.size() > i_base.depthOfInheritance &&
            i_base.typeId == i_derived[i_base.depthOfInheritance - 1];
   };
@@ -339,13 +329,13 @@ namespace HB4
                                                  typeInfo.end()});
     }
 
-    inline void connect(const ArrayView2<TypeId> eventType,
-                        Handler handler)
+    inline void connect(const ArrayView2<TypeId> eventType, Handler handler)
     {
       handler.pos = pos++;
       invokers[eventType.back()].append(handler);
       registerType(eventType);
       updateDependencies(handler.getObject());
+      simpleInvokersUpdated = false;
     }
 
     inline ArrayView2<TypeId> getTypeInfo(const TypeId i_typeId)
@@ -502,9 +492,11 @@ namespace HB4
     {
       if (auto* invoker = findInvoker(hash.event))
       {
-        const auto disconnected = invoker->disconnect(i_object, hash.method);
-        updateDependencies(i_object);
-        return disconnected;
+        if (const auto disconnected = invoker->disconnect(i_object, hash.method); disconnected > 0)
+        {
+          updateDependencies(i_object);
+          return disconnected;
+        }
       }
       return 0;
     }

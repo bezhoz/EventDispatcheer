@@ -23,22 +23,6 @@ namespace HB4
                        });
   }
 
-  void Invoker::invoke(const void* event)
-  {
-    invokeIf(event, [](const auto&)
-    {
-      return true;
-    });
-  }
-
-  void Invoker::invoke(const void* event, ArrayView2<TypeId> i_eventTypes)
-  {
-    invokeIf(event, [i_eventTypes](const auto& handler)
-    {
-      return !isBaseOrEqual(handler.notProcessesEvents, i_eventTypes);
-    });
-  }
-
   size_t Invoker::disconnect(const void* object)
   {
     return removeIf(object, [](const auto&)
@@ -71,34 +55,33 @@ namespace HB4
 
   void SimpleInvoker::removeEmpty()
   {
-    if (!dirty || isInInvokeProcess > 0)
+    if (!dirty || isInInvokeProcess)
     {
       return;
     }
     functions.erase(std::remove_if(begin(functions), end(functions),
                                    [](const auto& function)
                                    {
-                                     return !function.has_value();
+                                     return !function.value.has_value();
                                    }), end(functions));
     dirty = false;
   }
 
   void InvokerContainerImpl::updateSimpleInvokers()
   {
-    if (simpleInvokersUpdated)
+    if (simpleInvokersUpdated || isInInvokeProcess)
     {
       return;
     }
     simpleInvokers.clear();
     for (const auto&[eventTypeId, invoker]: invokers)
     {
-      std::vector<std::pair<size_t, FunctionView>> sortedFunctions;
+      auto& simpleInvoker = simpleInvokers[eventTypeId];
       for (const auto& handler: invoker.handlers)
       {
         if (handler.has_value())
         {
-          sortedFunctions.emplace_back(handler->pos, handler->fv);
-//            simpleInvoker.append(handler->fv);
+          simpleInvoker.append(handler->pos, handler->fv);
         }
       }
       const auto eventTypeInfo = getTypeInfo(eventTypeId);
@@ -112,24 +95,12 @@ namespace HB4
             if (handler.has_value() &&
                 !isBaseOrEqual(handler->notProcessesEvents, eventTypeInfo))
             {
-              sortedFunctions.emplace_back(handler->pos, handler->fv);
-//              simpleInvoker.append(handler->fv);
+              simpleInvoker.append(handler->pos, handler->fv);
             }
           }
         }
       }
-      std::sort(begin(sortedFunctions), end(sortedFunctions),
-                [](const auto& left, const auto& right)
-                {
-                  return left.first < right.first;
-                });
-      auto& simpleInvoker = simpleInvokers[eventTypeId];
-      std::transform(begin(sortedFunctions), end(sortedFunctions),
-                     std::back_inserter(simpleInvoker.functions),
-                     [](const auto& value)
-                     {
-                       return value.second;
-                     });
+      simpleInvoker.sort();
     }
     simpleInvokersUpdated = true;
   }
@@ -138,11 +109,8 @@ namespace HB4
                                     const ArrayView2<TypeId> i_eventType)
   {
     const auto firstLevel = !isInInvokeProcess;
+    updateSimpleInvokers();
     isInInvokeProcess = true;
-    if (firstLevel)
-    {
-      updateSimpleInvokers();
-    }
     if (auto* invoker = findSimpleInvoker(i_eventType.back()))
     {
       invoker->invoke(i_event);
@@ -183,6 +151,7 @@ namespace HB4
       disconnected += invoker.disconnect(i_object);
     }
     dirty = disconnected > 0;
+    simpleInvokersUpdated = dirty;
     removeEmpty();
     return disconnected;
   }
@@ -201,6 +170,7 @@ namespace HB4
                                                                    eventMethodType);
                                               });
     dirty = disconnected > 0;
+    simpleInvokersUpdated = dirty;
     removeEmpty();
     return disconnected;
   }
