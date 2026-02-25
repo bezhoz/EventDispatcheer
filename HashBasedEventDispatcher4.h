@@ -95,8 +95,7 @@ namespace HB4
   struct FunctionView
   {
     template<auto Method>
-    FunctionView(Class<Method>& i_object, TemplateParameter<Method>):
-            object(static_cast<void*>(&i_object)),
+    FunctionView(TemplateParameter<Method>):
             func([](void* object, const void* event)
                  {
                    (static_cast<Class<Method>*>(object)->*Method)(
@@ -105,9 +104,22 @@ namespace HB4
     {
     }
 
+    using F = void (*)(void*, const void*);
+    F func;
+  };
+
+  struct ObjectFunctionView
+  {
+    template<auto Method>
+    ObjectFunctionView(Class<Method>& i_object, TemplateParameter<Method>):
+            object(static_cast<void*>(&i_object)),
+            fv(TemplateParameter<Method>())
+    {
+    }
+
     inline void invoke(const void* i_event) const
     {
-      func(object, i_event);
+      fv.func(object, i_event);
     }
 
     inline const void* getObject() const
@@ -116,9 +128,8 @@ namespace HB4
     }
 
   private:
-    using F = void (*)(void*, const void*);
     void* object;
-    F func;
+    FunctionView fv;
   };
 
   template<typename T>
@@ -131,7 +142,7 @@ namespace HB4
     std::optional<T> value;
   };
 
-  using NumberedFunctionView = Numbered<FunctionView>;
+  using NumberedFunctionView = Numbered<ObjectFunctionView>;
 
   struct Handler
   {
@@ -149,7 +160,7 @@ namespace HB4
     MethodId methodId;
     std::vector<ArrayView2<TypeId>> notProcessesEvents;
 
-    FunctionView fv;
+    ObjectFunctionView fv;
     size_t pos;
   };
 
@@ -167,10 +178,6 @@ namespace HB4
 
   struct Invoker
   {
-    explicit Invoker()
-    {
-    }
-
     inline void append(const Handler& i_handlerItem)
     {
       handlers.push_back(i_handlerItem);
@@ -240,7 +247,7 @@ namespace HB4
     {
     }
 
-    inline void append(const size_t i_pos, const FunctionView& i_function)
+    inline void append(const size_t i_pos, const ObjectFunctionView& i_function)
     {
       functions.emplace_back(i_pos, i_function);
     }
@@ -320,6 +327,28 @@ namespace HB4
            i_base.typeId == i_derived[i_base.depthOfInheritance - 1];
   };
 
+  template<typename T>
+  struct TreeNode
+  {
+    T value;
+    std::vector<TreeNode<T>> subTree;
+  };
+
+  struct EventHandlers
+  {
+    ArrayView2<TypeId> eventTypeInfo;
+    std::vector<Handler*> handlers;
+  };
+
+  using EventHandlersTreeNode = TreeNode<EventHandlers>;
+
+  struct ObjectHandlers
+  {
+    
+    void* object;
+  };
+
+
   struct InvokerContainerImpl
   {
     inline void registerType(const ArrayView2<TypeId> typeInfo)
@@ -343,21 +372,6 @@ namespace HB4
       const auto it = eventTypes.find(i_typeId);
       return it == end(eventTypes) ? ArrayView2<TypeId>() : it->second;
     }
-
-    template<typename T>
-    struct TreeNode
-    {
-      T value;
-      std::vector<TreeNode<T>> subTree;
-    };
-
-    struct EventHandlers
-    {
-      ArrayView2<TypeId> eventTypeInfo;
-      std::vector<Handler*> handlers;
-    };
-
-    using EventHandlersTreeNode = TreeNode<EventHandlers>;
 
     inline EventHandlersTreeNode* updateTreeFrom(
             std::vector<EventHandlersTreeNode>& result,
