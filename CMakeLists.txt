@@ -7,8 +7,8 @@ add_executable(main
         main.cpp
         HashBasedEventDispatcher2.cpp
         HashBasedEventDispatcher4.cpp
-        HashBasedEventDispatcher3.cpp)
+        HashBasedEventDispatcher3.cpp struct_util.h)
 
 add_executable(test
         ut.cpp
-        HashBasedEventDispatcher4.cpp)
+        HashBasedEventDispatcher4.cpp struct_util.h)

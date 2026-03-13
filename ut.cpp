@@ -1,7 +1,13 @@
 #include "HashBasedEventDispatcher4.h"
 
+#include "struct_util.h"
+
 #include <functional>
 #include <tuple>
+#include <utility>
+#include <numeric>
+
+#include <cxxabi.h>
 
 #define DOCTEST_CONFIG_IMPLEMENT_WITH_MAIN
 
@@ -31,14 +37,31 @@ TEST_CASE("Hash based event dispatcher 4 simple test ")
   CHECK(testHandler.value == 5);
 }
 
-template<typename T, typename R, typename F, size_t I = 0>
-R accumulateTuple(const T& tuple, R initial, F op)
+template<typename, typename = void> constexpr bool
+        is_to_string_convertible = false;
+
+template<typename T> constexpr bool is_to_string_convertible
+        <T, std::void_t<decltype(std::to_string(std::declval<T>()))>> = true;
+
+template<typename, typename = void> constexpr bool
+        is_string_initializer = false;
+
+template<typename T> constexpr bool is_string_initializer
+        <T, std::void_t<decltype(std::string(std::declval<T>()))>> = true;
+
+template<typename, typename = void> constexpr bool
+        is_stringstream_suitable = false;
+
+template<typename T> constexpr bool is_stringstream_suitable
+        <T, std::void_t<decltype(std::declval<std::ostringstream>() << std::declval<T>())>> = true;
+
+std::string demangle(std::string_view typeName)
 {
-  if constexpr(I < std::tuple_size_v<T>)
-  {
-    return accumulateTuple<T, R, F, I + 1>(tuple, op(std::move(initial), std::get<I>(tuple)), op);
-  }
-  return initial;
+  int status;
+  char* realname = abi::__cxa_demangle(typeName.data(), NULL, NULL, &status);
+  std::string result(realname);
+  std::free(realname);
+  return result;
 }
 
 namespace doctest
@@ -48,13 +71,36 @@ namespace doctest
   {
     static String convert(const std::tuple<Ts...>& value)
     {
-      const auto result = accumulateTuple(value, std::string("{"),[prefix = ""](std::string&& initial , auto value) mutable
-      {
-        initial += prefix + std::to_string(value);
-        prefix = ", ";
-        return initial;
-      });
-      return (result + "}").c_str();
+      return std::apply([](auto&& ...args)
+                        {
+                          const auto to_string = [](auto&& value) -> std::string
+                          {
+                            using ValueType = decltype(value);
+                            if constexpr (is_to_string_convertible<ValueType>)
+                            {
+                              return std::to_string(value);
+                            }
+                            else if constexpr (is_string_initializer<ValueType>)
+                            {
+                              return value;
+                            }
+                            else if constexpr (is_stringstream_suitable<ValueType>)
+                            {
+                              std::ostringstream ss;
+                              ss << value;
+                              return ss.str();
+                            }
+                            else
+                            {
+                              return ".";
+                            }
+                          };
+                          auto prefix = "";
+                          return "{" +
+                                 ((std::exchange(prefix, ", ") +
+                                   to_string(args)) + ...) +
+                                 "}";
+                        }, value).c_str();
     }
   };
 
@@ -63,16 +109,13 @@ namespace doctest
   {
     static String convert(const std::vector<T>& vector)
     {
-      String result;
+      String result = "[";
       String coma;
       for (const auto& value: vector)
       {
-        result += coma;
-        result += StringMaker<T>::convert(value);
-        coma = ", ";
+        result += std::exchange(coma, ", ") + StringMaker<T>::convert(value);
       }
-      result = "[" + result + "]";
-      return result;
+      return result + "]";
     }
   };
 }
@@ -83,121 +126,118 @@ size_t getTypeHashCode(const T& object)
   return typeid(object).hash_code();
 }
 
+using EventProcessingInfo = std::tuple<HB4::Hash, int, size_t>;
+using EventsProcessingInfo = std::vector<EventProcessingInfo>;
+
+struct EventProcessingLogger
+{
+  template<typename E>
+  void log(HB4::Hash handlerId, const E& i_event)
+  {
+    eventsLog.emplace_back(handlerId, i_event.value, getTypeHashCode(i_event));
+  };
+
+  template<auto Method, typename E>
+  void log(const E& i_event)
+  {
+    eventsLog.emplace_back(HB4::ValueHash<Method>, i_event.value, getTypeHashCode(i_event));
+  };
+  EventsProcessingInfo eventsLog;
+};
+
 TEST_CASE("Hash based event dispatcher 4 complex test ")
 {
   struct EventBase
   {
     int value = 0;
     EventBase(int i_value): value(i_value){}
-    
-    virtual int getType() const
-    {
-      return 0;
-    }
+    virtual ~EventBase(){};
   };
 
   struct Event1 : EventBase
   {
     using Base = EventBase;
     Event1(int value): Base(value){}
-    int getType() const override
-    {
-      return 1;
-    }
   };
 
   struct Event2 : EventBase
   {
     using Base = EventBase;
     Event2(int value): Base(value){}
-    int getType() const override
-    {
-      return 2;
-    }
   };
 
   struct Event1_1 : Event1
   {
     using Base = Event1;
     Event1_1(int value): Base(value){}
-    int getType() const override
-    {
-      return 3;
-    }
   };
 
   struct Event2_1 : Event2
   {
     using Base = Event2;
     Event2_1(int value): Base(value){}
-    int getType() const override
-    {
-      return 4;
-    }
   };
-
-  using LogFunction = std::function<void(int, const EventBase&)>;
-
+  
   struct Handler1
   {
-    LogFunction logf;
+    EventProcessingLogger& logger;
 
-    Handler1(LogFunction i_logFunction = [](int, const EventBase&)
-    {
-    }) : logf(i_logFunction)
+    Handler1(EventProcessingLogger& i_logger) : logger(i_logger)
     {
     }
 
     void handle1(const Event1& event)
     {
-      logf(1, event);
+      logger.log<&Handler1::handle1>(event);
+    }
+
+    void handle3(const Event1& event)
+    {
+      logger.log<&Handler1::handle3>(event);
     }
 
     void handle2(const Event2& event)
     {
-      logf(2, event);
+      logger.log<&Handler1::handle2>(event);
     }
   };
 
   struct Handler2
   {
-    LogFunction logf;
+    EventProcessingLogger& logger;
 
-    Handler2(LogFunction i_logFunction = [](int, const EventBase&)
-    {
-    }) : logf(i_logFunction)
+    Handler2(EventProcessingLogger& i_logger) : logger(i_logger)
     {
     }
 
     void onEvent1(const Event1& event)
     {
-      logf(3, event);
+      logger.log<&Handler2::onEvent1>(event);
+//      std::cout << "Имя функции: " << __FUNCTION__ << std::endl;
+//      std::cout << "Полная сигнатура: " << __PRETTY_FUNCTION__ << std::endl;
+//      std::cout << "Имя функции: " << __func__ << std::endl;
+//      std::cout << "Имя типа: " << demangle(typeid(*this).name()) << std::endl;
     }
 
     void onEvent2(const Event2& event)
     {
-      logf(4, event);
+      logger.log<&Handler2::onEvent2>(event);
     }
 
     void onEvent1_1(const Event1_1& event)
     {
-      logf(5, event);
+      logger.log<&Handler2::onEvent1_1>(event);
     }
 
     void onEvent2_1(const Event2_1& event)
     {
-      logf(6, event);
+      logger.log<&Handler2::onEvent2_1>(event);
     }
   };
 
-  std::vector<std::tuple<int, int, size_t>> invoker_log;
-  const auto invoker_log_push_back = [&invoker_log](int handlerId,  const EventBase& i_event)
-  {
-//    invoker_log.emplace_back(handlerId, i_event.value, i_event.getType());
-    invoker_log.emplace_back(handlerId, i_event.value, getTypeHashCode(i_event));
-  };
-  Handler1 h1{invoker_log_push_back};
-  Handler2 h2{invoker_log_push_back};
+  EventProcessingLogger logger;
+  Handler1 h1{logger};
+  Handler2 h2{logger};
   HB4::InvokerContainer ic;
 
   HB4::Register<&Handler1::handle1, &Handler1::handle2> r1;
@@ -210,38 +250,42 @@ TEST_CASE("Hash based event dispatcher 4 complex test ")
   SUBCASE("Event1:1")
   {
     const Event1 e{1};
-    const auto typeHashCode = getTypeHashCode(e);
     ic.invoke(e);
-    REQUIRE_EQ(invoker_log.size(), 2);
-    CHECK_EQ(invoker_log[0], std::tuple{1, 1, typeHashCode});
-    CHECK_EQ(invoker_log[1], std::tuple{3, 1, typeHashCode});
+
+    EventProcessingLogger expected;
+    expected.log<&Handler1::handle1>(e);
+    expected.log<&Handler2::onEvent1>(e);
+
+    CHECK_EQ(logger.eventsLog, expected.eventsLog);
   }
   SUBCASE("Event2:2")
   {
     const Event2 e{2};
-    const auto typeHashCode = getTypeHashCode(e);
     ic.invoke(e);
-    REQUIRE_EQ(invoker_log.size(), 2);
-    CHECK_EQ(invoker_log[0], std::tuple{2, 2, typeHashCode});
-    CHECK_EQ(invoker_log[1], std::tuple{4, 2, typeHashCode});
+
+    EventProcessingLogger expected;
+    expected.log<&Handler1::handle2>(e);
+    expected.log<&Handler2::onEvent2>(e);
+    CHECK_EQ(logger.eventsLog, expected.eventsLog);
   }
   SUBCASE("Event1_1:3")
   {
     const Event1_1 e{3};
-    const auto typeHashCode = getTypeHashCode(e);
     ic.invoke(e);
-    REQUIRE_EQ(invoker_log.size(), 2);
-    CHECK_EQ(invoker_log[0], std::tuple{1, 3, typeHashCode});
-    CHECK_EQ(invoker_log[1], std::tuple{5, 3, typeHashCode});
+
+    EventProcessingLogger expected;
+    expected.log<&Handler1::handle1>(e);
+    expected.log<&Handler2::onEvent1_1>(e);
+    CHECK_EQ(logger.eventsLog, expected.eventsLog);
   }
   SUBCASE("Event2_1:4")
   {
     const Event2_1 e{4};
-    const auto typeHashCode = getTypeHashCode(e);
     ic.invoke(e);
-    REQUIRE_EQ(invoker_log.size(), 2);
-    CHECK_EQ(invoker_log[0], std::tuple{2, 4, typeHashCode});
-    CHECK_EQ(invoker_log[1], std::tuple{6, 4, typeHashCode});
-    CHECK_EQ(invoker_log, std::vector{std::tuple{2, 4, typeHashCode}, std::tuple{6, 4, size_t(7)}});
+
+    EventProcessingLogger expected;
+    expected.log<&Handler1::handle2>(e);
+    expected.log<&Handler2::onEvent2_1>(e);
+    CHECK_EQ(logger.eventsLog, expected.eventsLog);
   }
 }

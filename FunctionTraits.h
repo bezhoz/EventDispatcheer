@@ -2,6 +2,8 @@
 
 #include <type_traits>
 
+#include <tuple>
+
 template<typename T>
 struct FunctionTraits;
 
@@ -24,4 +26,24 @@ struct First
 template<auto... Methods>
 using Class = typename FunctionTraits<typename First<decltype(Methods)...>::Type>::Class;
 
+template<typename TupleT, typename Fn>
+void for_each_tuple2(TupleT&& tp, Fn&& fn)
+{
+  std::apply([&fn](auto&& ...args)
+             {
+               (fn(std::forward<decltype(args)>(args)), ...);
+             }, std::forward<TupleT>(tp));
+}
+
+template<typename T, typename R, typename F>
+auto accumulateT(const T& tuple, R initial, F op)
+{
+  auto result = std::move(initial);
+  const auto mapOp = [&result, &op](auto&& value)
+  {
+    result = op(result, value);
+  };
+  for_each_tuple2(tuple, mapOp);
+  return result;
+}
 
